@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import './App.css';
+import Login from './Login.jsx';
 
 const API_URL = 'http://localhost:3000/api';
 
@@ -31,6 +32,11 @@ const navigation = [
 ];
 
 function App() {
+  // Session d'authentification
+  const [token, setToken] = useState(() => sessionStorage.getItem('gestionppn_token') || '');
+  const [utilisateur, setUtilisateur] = useState(null);
+  const [sessionVerifiee, setSessionVerifiee] = useState(false);
+
   const [pageActive, setPageActive] = useState('dashboard');
   const [menuMobileOuvert, setMenuMobileOuvert] = useState(false);
 
@@ -64,10 +70,12 @@ function App() {
   const [enregistrementStock, setEnregistrementStock] = useState(false);
 
   async function requeteApi(url, options = {}) {
+    const jeton = sessionStorage.getItem('gestionppn_token') || token;
     const reponse = await fetch(url, {
       ...options,
       headers: {
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(jeton ? { Authorization: `Bearer ${jeton}` } : {}),
         ...(options.headers || {}),
       },
     });
@@ -77,6 +85,14 @@ function App() {
       resultat = await reponse.json();
     } catch {
       throw new Error('Le serveur a renvoyé une réponse illisible.');
+    }
+
+    if (reponse.status === 401) {
+      sessionStorage.removeItem('gestionppn_token');
+      setToken('');
+      setUtilisateur(null);
+      setSessionVerifiee(true);
+      throw new Error('Votre session a expiré. Veuillez vous reconnecter.');
     }
 
     if (!reponse.ok || resultat.success === false) {
@@ -166,15 +182,92 @@ function App() {
     }
   }
 
+  // Vérifier le jeton sauvegardé avant d'afficher le tableau de bord.
   useEffect(() => {
-    chargerDonnees();
+    let annule = false;
+
+    async function verifierSession() {
+      const jeton = sessionStorage.getItem('gestionppn_token');
+
+      if (!jeton) {
+        if (!annule) {
+          setToken('');
+          setUtilisateur(null);
+          setChargement(false);
+          setSessionVerifiee(true);
+        }
+        return;
+      }
+
+      try {
+        const reponse = await fetch(`${API_URL}/auth/me`, {
+          headers: { Authorization: `Bearer ${jeton}` },
+        });
+        const resultat = await reponse.json();
+
+        if (!reponse.ok || !resultat.success || !resultat.utilisateur) {
+          throw new Error('Session invalide.');
+        }
+
+        if (!annule) {
+          setToken(jeton);
+          setUtilisateur(resultat.utilisateur);
+        }
+      } catch {
+        sessionStorage.removeItem('gestionppn_token');
+        if (!annule) {
+          setToken('');
+          setUtilisateur(null);
+        }
+      } finally {
+        if (!annule) setSessionVerifiee(true);
+      }
+    }
+
+    verifierSession();
+    return () => { annule = true; };
   }, []);
 
+  // Les données ne sont chargées qu'après la validation de la session.
   useEffect(() => {
-    if (pageActive === 'stock') {
+    if (!sessionVerifiee) return;
+    if (token && utilisateur) {
+      chargerDonnees();
+    } else {
+      setChargement(false);
+    }
+  }, [sessionVerifiee, token, utilisateur]);
+
+  useEffect(() => {
+    if (sessionVerifiee && token && utilisateur && pageActive === 'stock') {
       actualiserDonneesStock();
     }
-  }, [pageActive]);
+  }, [sessionVerifiee, token, utilisateur, pageActive]);
+
+  function gererConnexion(resultat) {
+    sessionStorage.setItem('gestionppn_token', resultat.token);
+    setToken(resultat.token);
+    setUtilisateur(resultat.utilisateur);
+    setSessionVerifiee(true);
+    setPageActive('dashboard');
+    setErreur('');
+    setMessage('Connexion réussie. Bienvenue dans GestionPPN !');
+    setChargement(true);
+  }
+
+  function deconnecter() {
+    sessionStorage.removeItem('gestionppn_token');
+    setToken('');
+    setUtilisateur(null);
+    setPageActive('dashboard');
+    setProduits([]);
+    setCategories([]);
+    setMouvements([]);
+    setErreur('');
+    setMessage('');
+    setMenuMobileOuvert(false);
+    setChargement(false);
+  }
 
   function afficherPage(page) {
     setPageActive(page);
@@ -407,6 +500,18 @@ function App() {
     return null;
   }
 
+  if (!sessionVerifiee) {
+    return (
+      <div className="login-page">
+        <div className="login-card" role="status">Vérification de votre session…</div>
+      </div>
+    );
+  }
+
+  if (!token || !utilisateur) {
+    return <Login onConnexion={gererConnexion} />;
+  }
+
   return (
     <div className="admin-app">
       <button
@@ -456,8 +561,10 @@ function App() {
             </div>
           </div>
           <div className="topbar-right">
-            <span className="today-label">ESPACE ADMINISTRATEUR</span>
-            <span className="user-avatar">A</span>
+            <span className="today-label">{utilisateur.role ? utilisateur.role.replace(/_/g, ' ').toUpperCase() : 'ESPACE UTILISATEUR'}</span>
+            <span className="topbar-user-name">{[utilisateur.prenom, utilisateur.nom].filter(Boolean).join(' ') || utilisateur.email}</span>
+            <span className="user-avatar">{(utilisateur.prenom?.[0] || utilisateur.nom?.[0] || utilisateur.email?.[0] || 'U').toUpperCase()}</span>
+            <button type="button" className="button button-light" onClick={deconnecter}>Déconnexion</button>
           </div>
         </header>
 
